@@ -155,13 +155,13 @@ impl CacheEntry {
     }
 
     // Create a new entry for a standalone texture.
-    fn new_empty(last_access: FrameStamp) -> Self {
+    fn new_empty(texture_id: CacheTextureId, last_access: FrameStamp) -> Self {
         CacheEntry {
             size: size2(0, 0),
             user_data: [0.0; 3],
             last_access,
             details: EntryDetails::Empty,
-            texture_id: CacheTextureId(std::u64::MAX),
+            texture_id: texture_id,
             input_format: ImageFormat::BGRA8,
             filter: TextureFilter::Linear,
             swizzle: Swizzle::default(),
@@ -1308,11 +1308,9 @@ impl TextureCache {
     /// Allocates a new standalone cache entry.
     fn allocate_standalone_entry(
         &mut self,
+        texture_id: CacheTextureId,
         params: &CacheAllocParams,
     ) -> CacheEntry {
-        let texture_id = self.next_id;
-        self.next_id.0 += 1;
-
         // Push a command to allocate device storage of the right size / format.
         let info = TextureCacheAllocInfo {
             width: params.descriptor.size.width,
@@ -1340,6 +1338,30 @@ impl TextureCache {
         )
     }
 
+        /// Allocates a new standalone cache entry.
+    fn allocate_empty_entry(
+        &mut self,
+        texture_id: CacheTextureId,
+    ) -> CacheEntry {
+        let cache_entry = CacheEntry::new_empty(
+            texture_id,
+            self.now,
+        );
+
+        // Push a command to allocate device storage of the right size / format.
+        let info = TextureCacheAllocInfo {
+            width: cache_entry.size.width,
+            height: cache_entry.size.height,
+            format: cache_entry.input_format,
+            filter: cache_entry.filter,
+            layer_count: 1,
+            is_shared_cache: false,
+            has_depth: false,
+        };
+        self.pending_updates.push_alloc(texture_id, info);
+        cache_entry
+    }
+
     /// Allocates a cache entry appropriate for the given parameters.
     ///
     /// This allocates from the shared cache unless the parameters do not meet
@@ -1349,9 +1371,6 @@ impl TextureCache {
         &mut self,
         params: &CacheAllocParams,
     ) -> CacheEntry {
-        if params.descriptor.size.is_empty_or_negative() {
-            return CacheEntry::new_empty(self.now);
-        }
         // If this image doesn't qualify to go in the shared (batching) cache,
         // allocate a standalone entry.
         if self.is_allowed_in_shared_cache(params.filter, &params.descriptor) {
@@ -1362,7 +1381,13 @@ impl TextureCache {
             }
             self.allocate_from_shared_cache(params)
         } else {
-            self.allocate_standalone_entry(params)
+            let texture_id = self.next_id;
+            self.next_id.0 += 1;
+            if params.descriptor.size.is_empty_or_negative() {
+                self.allocate_empty_entry(texture_id)
+            } else {
+                self.allocate_standalone_entry(texture_id, params)
+            }
         }
     }
 
